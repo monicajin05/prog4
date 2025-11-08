@@ -1,8 +1,8 @@
 /* GLOBAL CONSTANTS AND VARIABLES */
 
 /* assignment specific globals */
-const INPUT_TRIANGLES_URL = "https://ncsucgclass.github.io/prog4/triangles.json"; // triangles file loc
-const INPUT_ELLIPSOIDS_URL = "https://ncsucgclass.github.io/prog4/ellipsoids.json"; // ellipsoids file loc
+const INPUT_TRIANGLES_URL = "triangles.json"; // triangles file loc
+// const INPUT_ELLIPSOIDS_URL = "https://ncsucgclass.github.io/prog4/ellipsoids.json"; // ellipsoids file loc
 var defaultEye = vec3.fromValues(0.5,0.5,-0.5); // default eye position in world space
 var defaultCenter = vec3.fromValues(0.5,0.5,0.5); // default view direction in world space
 var defaultUp = vec3.fromValues(0,1,0); // default view up vector
@@ -23,6 +23,7 @@ var normalBuffers = []; // this contains normal component lists by set, in tripl
 var triSetSizes = []; // this contains the size of each triangle set
 var triangleBuffers = []; // lists of indices into vertexBuffers by set, in triples
 var viewDelta = 0; // how much to displace view with each key press
+var uvBuffers = []; // this contains UV coord lists by set, in pairs
 
 /* shader parameter locations */
 var vPosAttribLoc; // where to put position for vertex shader
@@ -33,10 +34,18 @@ var diffuseULoc; // where to put diffuse reflecivity for fragment shader
 var specularULoc; // where to put specular reflecivity for fragment shader
 var shininessULoc; // where to put specular exponent for fragment shader
 
+var vNormAttribLoc;   // vertex normal attribute location
+var aUVLoc;           // attribute location for aVertexUV
+var uSamplerLoc;      // uniform sampler2D location
+var uUseTextureLoc;   // uniform float telling shader whether to use texture
+
 /* interaction variables */
 var Eye = vec3.clone(defaultEye); // eye position in world space
 var Center = vec3.clone(defaultCenter); // view direction in world space
 var Up = vec3.clone(defaultUp); // view up vector in world space
+
+var blendMode = 0;
+var uBlendModeLoc;
 
 // ASSIGNMENT HELPER FUNCTIONS
 
@@ -218,6 +227,9 @@ function handleKeyDown(event) {
             else
                 translateModel(vec3.scale(temp,Up,-viewDelta));
             break;
+        case "KeyB":
+            blendMode = (blendMode + 1) % 2;
+            break;
         case "Backspace": // reset model transforms to default
             for (var whichTriSet=0; whichTriSet<numTriangleSets; whichTriSet++) {
                 vec3.set(inputTriangles[whichTriSet].translation,0,0,0);
@@ -263,6 +275,8 @@ function setupWebGL() {
         //gl.clearColor(0.0, 0.0, 0.0, 1.0); // use black when we clear the frame buffer
         gl.clearDepth(1.0); // use max when we clear the depth buffer
         gl.enable(gl.DEPTH_TEST); // use hidden surface removal (with zbuffering)
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       }
     } // end try
     
@@ -271,6 +285,34 @@ function setupWebGL() {
     } // end catch
  
 } // end setupWebGL
+
+function makeTextureFromImage(img) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+
+  const isPOT = (n) => (n & (n - 1)) === 0;
+  if (isPOT(img.width) && isPOT(img.height)) {
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  } else {
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  return tex;
+}
+
+function resolveURL(baseUrl, rel) {
+  if (/^https?:\/\//i.test(rel)) return rel;         
+  const base = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1);
+  return base + rel;                                  
+}
+
 
 // read models in, load them into webgl buffers
 function loadModels() {
@@ -287,7 +329,7 @@ function loadModels() {
                 throw "in makeSphere: number of longitude steps too small!";
             else { // good number longitude steps
             
-                console.log("ellipsoid xyz: "+ ellipsoid.x +" "+ ellipsoid.y +" "+ ellipsoid.z);
+                // console.log("ellipsoid xyz: "+ ellipsoid.x +" "+ ellipsoid.y +" "+ ellipsoid.z);
                 
                 // make vertices
                 var ellipsoidVertices = [0,-1,0]; // vertices to return, init to south pole
@@ -324,7 +366,7 @@ function loadModels() {
                         case 2: // z
                             return(2/(currEllipsoid.c*currEllipsoid.c) * (val-currEllipsoid.z));
                     } // end switch
-                }); 
+                });
                 
                 // make triangles, from south pole to middle latitudes to north pole
                 var ellipsoidTriangles = []; // triangles to return
@@ -382,7 +424,15 @@ function loadModels() {
                 // set up the vertex and normal arrays, define model center and axes
                 inputTriangles[whichSet].glVertices = []; // flat coord list for webgl
                 inputTriangles[whichSet].glNormals = []; // flat normal list for webgl
+                inputTriangles[whichSet].glUVs = [];
                 var numVerts = inputTriangles[whichSet].vertices.length; // num vertices in tri set
+                for (var i=0; i<numVerts; ++i) {
+                  var uv = inputTriangles[whichSet].uvs[i]; // [u,v]
+                  inputTriangles[whichSet].glUVs.push(uv[0], uv[1]);
+                }
+                uvBuffers[whichSet] = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffers[whichSet]);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(inputTriangles[whichSet].glUVs), gl.STATIC_DRAW);
                 for (whichSetVert=0; whichSetVert<numVerts; whichSetVert++) { // verts in set
                     vtxToAdd = inputTriangles[whichSet].vertices[whichSetVert]; // get vertex to add
                     normToAdd = inputTriangles[whichSet].normals[whichSetVert]; // get normal to add
@@ -415,8 +465,30 @@ function loadModels() {
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, triangleBuffers[whichSet]); // activate that buffer
                 gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint16Array(inputTriangles[whichSet].glTriangles),gl.STATIC_DRAW); // data in
 
+                // --- UVs ---
+                uvBuffers[whichSet] = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffers[whichSet]);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(inputTriangles[whichSet].glUVs), gl.STATIC_DRAW);
+
+                // --- Texture ---
+                inputTriangles[whichSet].hasTexture = false;
+                if (inputTriangles[whichSet].material && inputTriangles[whichSet].material.texture) {
+                    var img = new Image();
+                    img.crossOrigin = "anonymous";
+                    img.onload = function(setIndex, imageObj) {
+                        return function() {
+                        inputTriangles[setIndex].glTexture = makeTextureFromImage(imageObj);
+                        inputTriangles[setIndex].hasTexture = true;
+                        };
+                    } (whichSet, img);
+                    img.onerror = function(setIndex){ return function(){ inputTriangles[setIndex].hasTexture = false; }; }(whichSet);
+
+                    // Resolve relative name like "abe.png" against triangles.json folder
+                    img.src = resolveURL(INPUT_TRIANGLES_URL, inputTriangles[whichSet].material.texture);
+                }
             } // end for each triangle set 
         
+
             inputEllipsoids = getJSONFile(INPUT_ELLIPSOIDS_URL,"ellipsoids"); // read in the ellipsoids
 
             if (inputEllipsoids == String.null)
@@ -479,15 +551,18 @@ function setupShaders() {
     var vShaderCode = `
         attribute vec3 aVertexPosition; // vertex position
         attribute vec3 aVertexNormal; // vertex normal
+        attribute vec2 aVertexUV; // vertex uv coord
         
         uniform mat4 umMatrix; // the model matrix
         uniform mat4 upvmMatrix; // the project view model matrix
         
+        varying vec2 vUV;
         varying vec3 vWorldPos; // interpolated world position of vertex
         varying vec3 vVertexNormal; // interpolated normal for frag shader
 
         void main(void) {
-            
+            vUV = aVertexUV;
+
             // vertex position
             vec4 vWorldPos4 = umMatrix * vec4(aVertexPosition, 1.0);
             vWorldPos = vec3(vWorldPos4.x,vWorldPos4.y,vWorldPos4.z);
@@ -502,6 +577,8 @@ function setupShaders() {
     // define fragment shader in essl using es6 template strings
     var fShaderCode = `
         precision mediump float; // set float to medium precision
+
+        uniform sampler2D uSampler; // texture sampler
 
         // eye location
         uniform vec3 uEyePosition; // the eye's position in world
@@ -521,8 +598,17 @@ function setupShaders() {
         // geometry properties
         varying vec3 vWorldPos; // world xyz of fragment
         varying vec3 vVertexNormal; // normal of fragment
+        varying vec2 vUV; // uv coord of fragment
+
+        uniform float uUseTexture; // whether to use texture or not
+        uniform int uBlendMode; // 0: replace, 1: modulate
             
         void main(void) {
+            // blinn phong
+            vec3 N = normalize(vVertexNormal); // normal at fragment
+            vec3 L = normalize(uLightPosition - vWorldPos); // light vector
+            vec3 V = normalize(uEyePosition - vWorldPos); // eye vector
+            vec3 H = normalize(L + V);
         
             // ambient term
             vec3 ambient = uAmbient*uLightAmbient; 
@@ -538,10 +624,35 @@ function setupShaders() {
             vec3 halfVec = normalize(light+eye);
             float highlight = pow(max(0.0,dot(normal,halfVec)),uShininess);
             vec3 specular = uSpecular*uLightSpecular*highlight; // specular term
-            
+
+            vec3 Cf = ambient + diffuse + specular;
+            Cf = clamp(Cf, 0.0, 1.0);
+
+            vec4 tex = texture2D(uSampler, vUV);
+            vec3 Ct = tex.rgb;
+            float At = tex.a;
+
+            vec3 outRgb;
+            float outA;
+
+            if (uUseTexture < 0.5) {
+                // no texture
+                outRgb = Cf;
+                outA = 1.0;
+            } else {
+                // with texture
+                if (uBlendMode == 0) {
+                    outRgb = Ct;
+                } else {
+                    outRgb = Cf * Ct;
+                }
+                outA = At;
+            }
+
             // combine to output color
-            vec3 colorOut = ambient + diffuse + specular; // no specular yet
-            gl_FragColor = vec4(colorOut, 1.0); 
+            // vec3 colorOut = ambient + diffuse + specular; // no specular yet
+            // gl_FragColor = vec4(colorOut, 1.0); 
+            gl_FragColor = vec4(outRgb, outA); 
         }
     `;
     
@@ -580,7 +691,17 @@ function setupShaders() {
                 // locate vertex uniforms
                 mMatrixULoc = gl.getUniformLocation(shaderProgram, "umMatrix"); // ptr to mmat
                 pvmMatrixULoc = gl.getUniformLocation(shaderProgram, "upvmMatrix"); // ptr to pvmmat
+
+                aUVLoc = gl.getAttribLocation(shaderProgram, "aVertexUV");
+                gl.enableVertexAttribArray(aUVLoc);
+
+                uSamplerLoc = gl.getUniformLocation(shaderProgram, "uSampler");
+                uDiffuseLoc = gl.getUniformLocation(shaderProgram, "uDiffuse");
+                uUseTextureLoc = gl.getUniformLocation(shaderProgram, "uUseTexture");
+                upvmMatrixULoc = gl.getUniformLocation(shaderProgram, "upvmMatrix"); // existing pvm
                 
+                gl.uniform1i(uSamplerLoc, 0);
+
                 // locate fragment uniforms
                 var eyePositionULoc = gl.getUniformLocation(shaderProgram, "uEyePosition"); // ptr to eye position
                 var lightAmbientULoc = gl.getUniformLocation(shaderProgram, "uLightAmbient"); // ptr to light ambient
@@ -591,13 +712,14 @@ function setupShaders() {
                 diffuseULoc = gl.getUniformLocation(shaderProgram, "uDiffuse"); // ptr to diffuse
                 specularULoc = gl.getUniformLocation(shaderProgram, "uSpecular"); // ptr to specular
                 shininessULoc = gl.getUniformLocation(shaderProgram, "uShininess"); // ptr to shininess
-                
-                // pass global constants into fragment uniforms
+                uBlendModeoc = gl.getUniformLocation(shaderProgram, "uBlendMode");
+
                 gl.uniform3fv(eyePositionULoc,Eye); // pass in the eye's position
                 gl.uniform3fv(lightAmbientULoc,lightAmbient); // pass in the light's ambient emission
                 gl.uniform3fv(lightDiffuseULoc,lightDiffuse); // pass in the light's diffuse emission
                 gl.uniform3fv(lightSpecularULoc,lightSpecular); // pass in the light's specular emission
                 gl.uniform3fv(lightPositionULoc,lightPosition); // pass in the light's position
+                gl.uniform1i(uBlendModeLoc, blendMode);
             } // end if no shader program link errors
         } // end if no compile errors
     } // end try 
@@ -681,8 +803,24 @@ function renderModels() {
 
         // triangle buffer: activate and render
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,triangleBuffers[whichTriSet]); // activate
-        gl.drawElements(gl.TRIANGLES,3*triSetSizes[whichTriSet],gl.UNSIGNED_SHORT,0); // render
+        // gl.drawElements(gl.TRIANGLES,3*triSetSizes[whichTriSet],gl.UNSIGNED_SHORT,0); // render
         
+        // --- UVs ---
+        gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffers[whichTriSet]);
+        gl.vertexAttribPointer(aUVLoc, 2, gl.FLOAT, false, 0, 0);
+
+        // Texture or fallback
+        if (inputTriangles[whichTriSet].hasTexture && inputTriangles[whichTriSet].glTexture) {
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, inputTriangles[whichTriSet].glTexture);
+            gl.uniform1f(uUseTextureLoc, 1.0);
+        } else {
+            gl.uniform1f(uUseTextureLoc, 0.0);  // use solid uDiffuse if texture missing
+        }
+
+        // indices + draw
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, triangleBuffers[whichTriSet]);
+        gl.drawElements(gl.TRIANGLES, 3 * triSetSizes[whichTriSet], gl.UNSIGNED_SHORT, 0);
     } // end for each triangle set
     
     // render each ellipsoid
