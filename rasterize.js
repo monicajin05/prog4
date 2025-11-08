@@ -2,7 +2,7 @@
 
 /* assignment specific globals */
 const INPUT_TRIANGLES_URL = "triangles.json"; // triangles file loc
-// const INPUT_ELLIPSOIDS_URL = "https://ncsucgclass.github.io/prog4/ellipsoids.json"; // ellipsoids file loc
+const INPUT_ELLIPSOIDS_URL = "ellipsoids.json"; // ellipsoids file loc
 var defaultEye = vec3.fromValues(0.5,0.5,-0.5); // default eye position in world space
 var defaultCenter = vec3.fromValues(0.5,0.5,0.5); // default view direction in world space
 var defaultUp = vec3.fromValues(0,1,0); // default view up vector
@@ -258,7 +258,7 @@ function setupWebGL() {
       imageContext = imageCanvas.getContext("2d"); 
       var bkgdImage = new Image(); 
       bkgdImage.crossOrigin = "Anonymous";
-      bkgdImage.src = "https://ncsucgclass.github.io/prog3/sky.jpg";
+      bkgdImage.src = "sky.jpg";
       bkgdImage.onload = function(){
           var iw = bkgdImage.width, ih = bkgdImage.height;
           imageContext.drawImage(bkgdImage,0,0,iw,ih,0,0,cw,ch);   
@@ -316,8 +316,7 @@ function resolveURL(baseUrl, rel) {
 
 
 // read models in, load them into webgl buffers
-function loadModels() {
-    
+function loadModels(file_path) {    
     // make an ellipsoid, with numLongSteps longitudes.
     // start with a sphere of radius 1 at origin
     // Returns verts, tris and normals.
@@ -397,7 +396,7 @@ function loadModels() {
         } // end catch
     } // end make ellipsoid
     
-    inputTriangles = getJSONFile(INPUT_TRIANGLES_URL,"triangles"); // read in the triangle data
+    inputTriangles = getJSONFile(file_path,"triangles"); // read in the triangle data
 
     try {
         if (inputTriangles == String.null)
@@ -901,14 +900,32 @@ function renderModels() {
     } // end for each ellipsoid
 } // end render model
 
+let currentView = 0;
+
+function render() {
+    if (currentView == 0) {
+        setupWebGL(); // set up the webGL environment
+        loadModels(INPUT_TRIANGLES_URL); // load in the triangles from tri file
+        setupShaders(); // setup the webGL shaders
+        renderModels(); // draw the triangles using webGL
+    } else {
+        setupWebGL(); // set up the webGL environment
+        loadModels(INPUT_ELLIPSOIDS_URL); // load in the triangles from tri file
+        setupShaders(); // setup the webGL shaders
+        renderModels(); // draw the triangles using webGL
+    }
+}
 
 /* MAIN -- HERE is where execution begins after window load */
 
 function main() {
-  
-  setupWebGL(); // set up the webGL environment
-  loadModels(); // load in the models from tri file
-  setupShaders(); // setup the webGL shaders
-  renderModels(); // draw the triangles using webGL
+    render();
+
+    window.addEventListener("keydown", function(event) {
+        if (event.key == "!") {
+            currentView = (currentView + 1) % 2;
+            render();
+        }
+    });
   
 } // end main
