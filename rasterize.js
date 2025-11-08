@@ -489,11 +489,14 @@ function loadModels() {
                 }
 
                 const mat = inputTriangles[whichSet].material || {};
-                inputTriangles[whichSet].opacity = (mat.opacity !== undefined) ? mat.opacity : 1.0;
+                const opacity =
+                    (mat.opacity != null) ? mat.opacity :
+                    (mat.alpha   != null) ? mat.alpha   : 1.0;   
+                inputTriangles[whichSet].opacity = opacity;
 
-                inputTriangles[whichSet].transparent =
-                    (inputTriangles[whichSet].opacity < 1.0) ||
-                    (inputTriangles[whichSet].hasTexture && (mat.useAlphaTexture === true));
+                const usesAlphaTexture = !!(mat.useAlphaTexture === true);
+                inputTriangles[whichSet].transparent =  (opacity < 1.0) || (inputTriangles[whichSet].hasTexture && usesAlphaTexture);
+
             } // end for each triangle set 
 
             inputEllipsoids = getJSONFile(INPUT_ELLIPSOIDS_URL,"ellipsoids"); // read in the ellipsoids
@@ -801,9 +804,8 @@ function renderModels() {
         gl.uniform3fv(ambientULoc, currSet.material.ambient);
         gl.uniform3fv(diffuseULoc, currSet.material.diffuse);
         gl.uniform3fv(specularULoc, currSet.material.specular);
-        const opacity = (currSet.material && currSet.material.opacity != null)
-        ? currSet.material.opacity : 1.0;
-        gl.uniform1f(shininessULoc, currSet.material.n);
+        const opacity = (currSet.opacity != null) ? currSet.opacity : 1.0;
+        gl.uniform1f(uOpacityLoc, opacity);
 
         // geometry
         gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffers[whichTriSet]);
@@ -846,7 +848,7 @@ function renderModels() {
     for (let i = 0; i < numTriangleSets; ++i) {
         const s = inputTriangles[i];
         const mat = s.material || {};
-        const opacity = (mat.opacity !== undefined) ? mat.opacity : 1.0;
+        const opacity = (s.opacity !== null) ? s.opacity : 1.0;
         const usesAlphaTexture = !!(s.hasTexture && mat.useAlphaTexture === true);
         if (opacity < 1.0 || usesAlphaTexture) {
             transparent.push(i);
