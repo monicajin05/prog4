@@ -38,6 +38,7 @@ var vNormAttribLoc;   // vertex normal attribute location
 var aUVLoc;           // attribute location for aVertexUV
 var uSamplerLoc;      // uniform sampler2D location
 var uUseTextureLoc;   // uniform float telling shader whether to use texture
+var uOpacityLoc;     // uniform float for object opacity
 
 /* interaction variables */
 var Eye = vec3.clone(defaultEye); // eye position in world space
@@ -486,8 +487,14 @@ function loadModels() {
                     // Resolve relative name like "abe.png" against triangles.json folder
                     img.src = resolveURL(INPUT_TRIANGLES_URL, inputTriangles[whichSet].material.texture);
                 }
+
+                const mat = inputTriangles[whichSet].material || {};
+                inputTriangles[whichSet].opacity = (mat.opacity !== undefined) ? mat.opacity : 1.0;
+
+                inputTriangles[whichSet].transparent =
+                    (inputTriangles[whichSet].opacity < 1.0) ||
+                    (inputTriangles[whichSet].hasTexture && (mat.useAlphaTexture === true));
             } // end for each triangle set 
-        
 
             inputEllipsoids = getJSONFile(INPUT_ELLIPSOIDS_URL,"ellipsoids"); // read in the ellipsoids
 
@@ -602,6 +609,7 @@ function setupShaders() {
 
         uniform float uUseTexture; // whether to use texture or not
         uniform int uBlendMode; // 0: replace, 1: modulate
+        uniform float uOpacity; // overall opacity
             
         void main(void) {
             // blinn phong
@@ -652,7 +660,7 @@ function setupShaders() {
             // combine to output color
             // vec3 colorOut = ambient + diffuse + specular; // no specular yet
             // gl_FragColor = vec4(colorOut, 1.0); 
-            gl_FragColor = vec4(outRgb, outA); 
+            gl_FragColor = vec4(outRgb, outA * uOpacity); 
         }
     `;
     
@@ -712,7 +720,8 @@ function setupShaders() {
                 diffuseULoc = gl.getUniformLocation(shaderProgram, "uDiffuse"); // ptr to diffuse
                 specularULoc = gl.getUniformLocation(shaderProgram, "uSpecular"); // ptr to specular
                 shininessULoc = gl.getUniformLocation(shaderProgram, "uShininess"); // ptr to shininess
-                uBlendModeoc = gl.getUniformLocation(shaderProgram, "uBlendMode");
+                uBlendModeLoc = gl.getUniformLocation(shaderProgram, "uBlendMode");
+                uOpacityLoc = gl.getUniformLocation(shaderProgram, "uOpacity");
 
                 gl.uniform3fv(eyePositionULoc,Eye); // pass in the eye's position
                 gl.uniform3fv(lightAmbientULoc,lightAmbient); // pass in the light's ambient emission
@@ -720,6 +729,7 @@ function setupShaders() {
                 gl.uniform3fv(lightSpecularULoc,lightSpecular); // pass in the light's specular emission
                 gl.uniform3fv(lightPositionULoc,lightPosition); // pass in the light's position
                 gl.uniform1i(uBlendModeLoc, blendMode);
+                gl.uniform1f(uOpacityLoc, 1.0);
             } // end if no shader program link errors
         } // end if no compile errors
     } // end try 
@@ -778,54 +788,91 @@ function renderModels() {
     mat4.multiply(pvMatrix,pvMatrix,pMatrix); // projection
     mat4.multiply(pvMatrix,pvMatrix,vMatrix); // projection * view
 
-    // render each triangle set
-    var currSet; // the tri set and its material properties
-    for (var whichTriSet=0; whichTriSet<numTriangleSets; whichTriSet++) {
-        currSet = inputTriangles[whichTriSet];
-        
-        // make model transform, add to view project
-        makeModelTransform(currSet);
-        mat4.multiply(pvmMatrix,pvMatrix,mMatrix); // project * view * model
-        gl.uniformMatrix4fv(mMatrixULoc, false, mMatrix); // pass in the m matrix
-        gl.uniformMatrix4fv(pvmMatrixULoc, false, pvmMatrix); // pass in the hpvm matrix
-        
-        // reflectivity: feed to the fragment shader
-        gl.uniform3fv(ambientULoc,currSet.material.ambient); // pass in the ambient reflectivity
-        gl.uniform3fv(diffuseULoc,currSet.material.diffuse); // pass in the diffuse reflectivity
-        gl.uniform3fv(specularULoc,currSet.material.specular); // pass in the specular reflectivity
-        gl.uniform1f(shininessULoc,currSet.material.n); // pass in the specular exponent
-        
-        // vertex buffer: activate and feed into vertex shader
-        gl.bindBuffer(gl.ARRAY_BUFFER,vertexBuffers[whichTriSet]); // activate
-        gl.vertexAttribPointer(vPosAttribLoc,3,gl.FLOAT,false,0,0); // feed
-        gl.bindBuffer(gl.ARRAY_BUFFER,normalBuffers[whichTriSet]); // activate
-        gl.vertexAttribPointer(vNormAttribLoc,3,gl.FLOAT,false,0,0); // feed
+    function drawOneTriSet(whichTriSet) {
+        const currSet = inputTriangles[whichTriSet];
 
-        // triangle buffer: activate and render
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,triangleBuffers[whichTriSet]); // activate
-        // gl.drawElements(gl.TRIANGLES,3*triSetSizes[whichTriSet],gl.UNSIGNED_SHORT,0); // render
-        
-        // --- UVs ---
+        // model * (view * proj)
+        makeModelTransform(currSet);
+        mat4.multiply(pvmMatrix,pvMatrix,mMatrix);
+        gl.uniformMatrix4fv(mMatrixULoc, false, mMatrix);
+        gl.uniformMatrix4fv(pvmMatrixULoc, false, pvmMatrix);
+
+        // material
+        gl.uniform3fv(ambientULoc, currSet.material.ambient);
+        gl.uniform3fv(diffuseULoc, currSet.material.diffuse);
+        gl.uniform3fv(specularULoc, currSet.material.specular);
+        const opacity = (currSet.material && currSet.material.opacity != null)
+        ? currSet.material.opacity : 1.0;
+        gl.uniform1f(shininessULoc, currSet.material.n);
+
+        // geometry
+        gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffers[whichTriSet]);
+        gl.vertexAttribPointer(vPosAttribLoc,3,gl.FLOAT,false,0,0);
+        gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffers[whichTriSet]);
+        gl.vertexAttribPointer(vNormAttribLoc,3,gl.FLOAT,false,0,0);
+
+        // UVs + texture
         gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffers[whichTriSet]);
         gl.vertexAttribPointer(aUVLoc, 2, gl.FLOAT, false, 0, 0);
 
-        // Texture or fallback
         if (inputTriangles[whichTriSet].hasTexture && inputTriangles[whichTriSet].glTexture) {
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, inputTriangles[whichTriSet].glTexture);
             gl.uniform1f(uUseTextureLoc, 1.0);
         } else {
-            gl.uniform1f(uUseTextureLoc, 0.0);  // use solid uDiffuse if texture missing
+            gl.uniform1f(uUseTextureLoc, 0.0);
         }
 
-        // indices + draw
+        gl.uniform1i(uBlendModeLoc, blendMode);
+
+        // draw
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, triangleBuffers[whichTriSet]);
-        gl.drawElements(gl.TRIANGLES, 3 * triSetSizes[whichTriSet], gl.UNSIGNED_SHORT, 0);
-    } // end for each triangle set
-    
-    // render each ellipsoid
-    var ellipsoid, instanceTransform = mat4.create(); // the current ellipsoid and material
-    
+        gl.drawElements(gl.TRIANGLES, 3*triSetSizes[whichTriSet], gl.UNSIGNED_SHORT, 0);
+    }
+
+    function worldCenterDistance(setObj) {
+        // transform center to world space by current model matrix
+        makeModelTransform(setObj);
+        const c4 = vec4.fromValues(setObj.center[0], setObj.center[1], setObj.center[2], 1.0);
+        const w4 = vec4.create();
+        vec4.transformMat4(w4, c4, mMatrix);
+        const w = vec3.fromValues(w4[0], w4[1], w4[2]);
+        return vec3.distance(Eye, w);
+    }
+
+    // --- bucketize triangle sets into opaque / transparent ---
+    const opaque = [];
+    const transparent = [];
+    for (let i = 0; i < numTriangleSets; ++i) {
+        const s = inputTriangles[i];
+        const mat = s.material || {};
+        const opacity = (mat.opacity !== undefined) ? mat.opacity : 1.0;
+        const usesAlphaTexture = !!(s.hasTexture && mat.useAlphaTexture === true);
+        if (opacity < 1.0 || usesAlphaTexture) {
+            transparent.push(i);
+        } else {
+            opaque.push(i);
+        }
+    }
+
+    // --- sort transparent back-to-front each frame ---
+    transparent.sort((a, b) => {
+        const da = worldCenterDistance(inputTriangles[a]);
+        const db = worldCenterDistance(inputTriangles[b]);
+        return db - da; // farther first
+    });
+
+    // --- PASS 1: opaque (depth test ON, depth write ON) ---
+    gl.depthMask(true);
+    for (const i of opaque) drawOneTriSet(i);
+
+    // --- PASS 2: transparent (depth test ON, depth write OFF) ---
+    gl.depthMask(false);
+    for (const i of transparent) drawOneTriSet(i);
+    gl.depthMask(true); // restore for next frame
+
+    // render each ellipsoid (treat as opaque here; if you add alpha, split similarly)
+    var ellipsoid;
     for (var whichEllipsoid=0; whichEllipsoid<numEllipsoids; whichEllipsoid++) {
         ellipsoid = inputEllipsoids[whichEllipsoid];
         
