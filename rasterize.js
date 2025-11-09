@@ -316,7 +316,9 @@ function resolveURL(baseUrl, rel) {
 
 
 // read models in, load them into webgl buffers
-function loadModels(file_path) {    
+function loadModels(trianglesUrl, ellipsoidsUrl) {
+    clearGLResources();
+        
     // make an ellipsoid, with numLongSteps longitudes.
     // start with a sphere of radius 1 at origin
     // Returns verts, tris and normals.
@@ -396,7 +398,8 @@ function loadModels(file_path) {
         } // end catch
     } // end make ellipsoid
     
-    inputTriangles = getJSONFile(file_path,"triangles"); // read in the triangle data
+    inputTriangles = getJSONFile(trianglesUrl,"triangles"); // read in the triangle data
+    // inputTriangles = getJSONFile(INPUT_ELLIPSOIDS_URL,"ellipsoids"); // read in the triangle data
 
     try {
         if (inputTriangles == String.null)
@@ -498,7 +501,7 @@ function loadModels(file_path) {
 
             } // end for each triangle set 
 
-            inputEllipsoids = getJSONFile(INPUT_ELLIPSOIDS_URL,"ellipsoids"); // read in the ellipsoids
+            inputEllipsoids = getJSONFile(ellipsoidsUrl,"ellipsoids"); // read in the ellipsoids
 
             if (inputEllipsoids == String.null)
                 throw "Unable to load ellipsoids file!";
@@ -526,7 +529,66 @@ function loadModels(file_path) {
 
                     // make the ellipsoid model
                     ellipsoidModel = makeEllipsoid(ellipsoid,32);
-    
+
+                    // UVs for ellipsoid
+                    const e = ellipsoid;
+                    const ellipsoidUVs = [];
+                    for (let i = 0; i < ellipsoidModel.vertices.length; i += 3) {
+                    let x = ellipsoidModel.vertices[i + 0];
+                    let y = ellipsoidModel.vertices[i + 1];
+                    let z = ellipsoidModel.vertices[i + 2];
+
+                    // undo scale & recenter
+                    let nx = (x - e.x) / e.a;
+                    let ny = (y - e.y) / e.b;
+                    let nz = (z - e.z) / e.c;
+                    const L = Math.hypot(nx, ny, nz);
+                    nx /= L; ny /= L; nz /= L;
+
+                    // spherical param to uv
+                    const u = Math.atan2(nx, nz) / (2.0 * Math.PI) + 0.5;
+                    const v = ny * 0.5 + 0.5;
+                    ellipsoidUVs.push(u, v);
+                    }
+
+                    // keep buffer indexing aligned with vertexBuffers/normalBuffers
+                    uvBuffers.push(gl.createBuffer());
+                    gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffers[uvBuffers.length - 1]);
+                    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(ellipsoidUVs), gl.STATIC_DRAW);
+                    
+                    // Texture & transparency for ellipsoid
+                    ellipsoid.hasTexture = false;
+                    const texName =
+                        (ellipsoid.texture) ||
+                        (ellipsoid.material && ellipsoid.material.texture);
+
+                    if (texName) {
+                        const img = new Image();
+                        img.crossOrigin = "anonymous";
+                        img.onload = ((el, imageObj) => () => {
+                            el.glTexture = makeTextureFromImage(imageObj);
+                            el.hasTexture = true;
+                        })(ellipsoid, img);
+                        img.onerror = ((el) => () => { el.hasTexture = false; })(ellipsoid);
+                        img.src = resolveURL(ellipsoidsUrl, texName);
+                    }
+
+                    // pick opacity from top-level first, then material, then default
+                    const eOpacity =
+                        (ellipsoid.opacity != null) ? ellipsoid.opacity :
+                        (ellipsoid.alpha   != null) ? ellipsoid.alpha   :
+                        (ellipsoid.material && ellipsoid.material.opacity != null) ? ellipsoid.material.opacity :
+                        (ellipsoid.material && ellipsoid.material.alpha   != null) ? ellipsoid.material.alpha   :
+                        1.0;
+                    ellipsoid.opacity = eOpacity;
+
+                    // if you later want texture-alpha-based transparency, gate it here
+                    const usesAlphaTex =
+                        (ellipsoid.material && ellipsoid.material.useAlphaTexture === true) ? true : false;
+
+                    ellipsoid.transparent = (eOpacity < 1.0) || (usesAlphaTex && ellipsoid.hasTexture);
+
+
                     // send the ellipsoid vertex coords and normals to webGL
                     vertexBuffers.push(gl.createBuffer()); // init empty webgl ellipsoid vertex coord buffer
                     gl.bindBuffer(gl.ARRAY_BUFFER,vertexBuffers[vertexBuffers.length-1]); // activate that buffer
@@ -803,6 +865,7 @@ function renderModels() {
         gl.uniform3fv(ambientULoc, currSet.material.ambient);
         gl.uniform3fv(diffuseULoc, currSet.material.diffuse);
         gl.uniform3fv(specularULoc, currSet.material.specular);
+        gl.uniform1f(shininessULoc, currSet.material.n);
         const opacity = (currSet.opacity != null) ? currSet.opacity : 1.0;
         gl.uniform1f(uOpacityLoc, opacity);
 
@@ -847,7 +910,7 @@ function renderModels() {
     for (let i = 0; i < numTriangleSets; ++i) {
         const s = inputTriangles[i];
         const mat = s.material || {};
-        const opacity = (s.opacity !== null) ? s.opacity : 1.0;
+        const opacity = (s.opacity != null) ? s.opacity : 1.0;
         const usesAlphaTexture = !!(s.hasTexture && mat.useAlphaTexture === true);
         if (opacity < 1.0 || usesAlphaTexture) {
             transparent.push(i);
@@ -870,7 +933,7 @@ function renderModels() {
     // --- PASS 2: transparent (depth test ON, depth write OFF) ---
     gl.depthMask(false);
     for (const i of transparent) drawOneTriSet(i);
-    gl.depthMask(true); // restore for next frame
+    // gl.depthMask(true); // restore for next frame
 
     // render each ellipsoid (treat as opaque here; if you add alpha, split similarly)
     var ellipsoid;
@@ -895,37 +958,102 @@ function renderModels() {
         gl.vertexAttribPointer(vNormAttribLoc,3,gl.FLOAT,false,0,0); // feed normal buffer to shader
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,triangleBuffers[numTriangleSets+whichEllipsoid]); // activate tri buffer
         
+        // UVs for ellipsoid
+        gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffers[numTriangleSets + whichEllipsoid]);
+        gl.vertexAttribPointer(aUVLoc, 2, gl.FLOAT, false, 0, 0);
+
+        gl.uniform1i(uBlendModeLoc, blendMode);
+
+        // texture state
+        if (ellipsoid.hasTexture && ellipsoid.glTexture) {
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, ellipsoid.glTexture);
+            gl.uniform1f(uUseTextureLoc, 1.0);
+        } else {
+            gl.uniform1f(uUseTextureLoc, 0.0);
+        }
+
+        // opacity (transparency)
+        gl.uniform1f(uOpacityLoc, (ellipsoid.opacity != null) ? ellipsoid.opacity : 1.0);
         // draw a transformed instance of the ellipsoid
         gl.drawElements(gl.TRIANGLES,triSetSizes[numTriangleSets+whichEllipsoid],gl.UNSIGNED_SHORT,0); // render
     } // end for each ellipsoid
 } // end render model
 
-let currentView = 0;
+const SCENES = [
+  { name: "Scene A",
+    trianglesUrl: "triangles.json",
+    ellipsoidsUrl: "ellipsoids.json",
+    backgroundUrl: "sky.jpg"
+  },
+  { name: "Scene B",
+    trianglesUrl: "triangles.json",
+    ellipsoidsUrl: "ellipsoids.json",
+    backgroundUrl: "sky.jpg"
+  }
+];
 
-function render() {
-    if (currentView == 0) {
-        setupWebGL(); // set up the webGL environment
-        loadModels(INPUT_TRIANGLES_URL); // load in the triangles from tri file
-        setupShaders(); // setup the webGL shaders
-        renderModels(); // draw the triangles using webGL
-    } else {
-        setupWebGL(); // set up the webGL environment
-        loadModels(INPUT_ELLIPSOIDS_URL); // load in the triangles from tri file
-        setupShaders(); // setup the webGL shaders
-        renderModels(); // draw the triangles using webGL
-    }
+let currentSceneIndex = 0;
+let imageCanvas, imageContext, bkgdImage;
+
+// swap background
+function setBackground(src) {
+  if (!bkgdImage) {
+    bkgdImage = new Image();
+    bkgdImage.crossOrigin = "anonymous";
+    bkgdImage.onload = function () {
+      const cw = imageCanvas.width, ch = imageCanvas.height;
+      imageContext.drawImage(bkgdImage, 0, 0, bkgdImage.width, bkgdImage.height, 0, 0, cw, ch);
+    };
+  }
+  bkgdImage.src = src; 
 }
 
-/* MAIN -- HERE is where execution begins after window load */
+// clear old GL resources before loading a new scen
+function clearGLResources() {
+  for (let i = 0; i < vertexBuffers.length; ++i) gl.deleteBuffer(vertexBuffers[i]);
+  for (let i = 0; i < normalBuffers.length; ++i) gl.deleteBuffer(normalBuffers[i]);
+  for (let i = 0; i < triangleBuffers.length; ++i) gl.deleteBuffer(triangleBuffers[i]);
+  for (let i = 0; i < uvBuffers.length; ++i) gl.deleteBuffer(uvBuffers[i]);
+  for (let s of inputTriangles) {
+    if (s && s.glTexture) gl.deleteTexture(s.glTexture);
+  }
+
+  // reset globals
+  inputTriangles = [];
+  inputEllipsoids = [];
+  numTriangleSets = 0;
+  numEllipsoids = 0;
+  vertexBuffers = [];
+  normalBuffers = [];
+  triangleBuffers = [];
+  uvBuffers = [];
+  triSetSizes = [];
+}
+
+// Load one scene 
+function loadScene(scene) {
+  setBackground(scene.backgroundUrl || "");
+  loadModels(scene.trianglesUrl || "", scene.ellipsoidsUrl || "");
+}
 
 function main() {
-    render();
+    // setup canvases
+    imageCanvas = document.getElementById("myImageCanvas");
+    imageContext = imageCanvas.getContext("2d");
 
-    window.addEventListener("keydown", function(event) {
-        if (event.key == "!") {
-            currentView = (currentView + 1) % 2;
-            render();
-        }
+    setupWebGL();
+    setupShaders();
+
+    // initial scene
+    loadScene(SCENES[currentSceneIndex]);
+
+    renderModels();
+
+    window.addEventListener("keydown", (event) => {
+    if (event.key === "!") {
+        currentSceneIndex = (currentSceneIndex + 1) % SCENES.length;
+        loadScene(SCENES[currentSceneIndex]); 
+    }
     });
-  
 } // end main
