@@ -287,31 +287,150 @@ function setupWebGL() {
  
 } // end setupWebGL
 
-function makeTextureFromImage(img) {
-  const tex = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
 
-  const isPOT = (n) => (n & (n - 1)) === 0;
-  if (isPOT(img.width) && isPOT(img.height)) {
-    gl.generateMipmap(gl.TEXTURE_2D);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
-  } else {
+var animatedTextures = [];  // array of { update() }
+
+// WebGL texture that we can refresh from a gif
+function makeDynamicTexture(width, height) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  }
-  gl.bindTexture(gl.TEXTURE_2D, null);
-  return tex;
+    // initialize empty
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    return tex;
+    }
+
+function makeGifTexture(img) {
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+
+    const tex = makeDynamicTexture(w, h);
+
+    ctx.drawImage(img, 0, 0, w, h);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    // updater called each frame
+    function update() {
+        ctx.drawImage(img, 0, 0, w, h);
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+
+    animatedTextures.push({ update });
+    return tex;
+}
+
+function makeVideoTexture(video) {
+    const w = video.videoWidth || 2;
+    const h = video.videoHeight || 2;
+    const tex = makeDynamicTexture(w, h);
+
+    function update() {
+        if (video.readyState >= 2) {
+            gl.bindTexture(gl.TEXTURE_2D, tex);
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+            gl.bindTexture(gl.TEXTURE_2D, null);
+        }
+    }
+
+    animatedTextures.push({ update });
+    return tex;
+}
+
+function loadAnyTexture(targetObj, baseUrl, texName) {
+    const url = resolveURL(baseUrl, texName);
+    const lower = texName.toLowerCase();
+
+    if (lower.endsWith(".gif")) {
+        const img = new Image();
+        //img.crossOrigin = "anonymous";
+
+        img.onload = () => {
+        try {
+            img.style.position = "fixed";
+            img.style.left = "-9999px";
+            img.style.top = "-9999px";
+            img.style.width = "1px";
+            img.style.height = "1px";
+            //img.style.opacity = "0";
+            img.style.width = "1px";
+            img.style.height = "1px";
+            img.style.pointerEvents = "none";
+            document.body.appendChild(img);
+            targetObj._offscreenImg = img;
+        } catch (e) {
+            // if DOM isn't available (unlikely) continue without appending
+            console.warn("Could not append offscreen GIF image to DOM:", e);
+        }
+
+        targetObj.glTexture = makeGifTexture(img);
+        targetObj.hasTexture = true;
+        };
+
+        img.onerror = () => { targetObj.hasTexture = false; };
+
+        img.src = url;
+        } else if (lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".ogg")) {
+        const video = document.createElement('video');
+        video.crossOrigin = "anonymous";
+        video.src = url;
+        video.loop = true; video.muted = true; video.playsInline = true;
+        video.autoplay = true; video.play().catch(()=>{});
+        video.addEventListener("loadeddata", () => {
+            targetObj.glTexture = makeVideoTexture(video);
+            targetObj.hasTexture = true;
+        }, { once:true });
+
+        } else {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = (() => {
+            targetObj.glTexture = makeTextureFromImage(img);
+            targetObj.hasTexture = true;
+        });
+        img.onerror = (() => { targetObj.hasTexture = false; });
+        img.src = url;
+    }
+}
+
+
+function makeTextureFromImage(img) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+
+    const isPOT = (n) => (n & (n - 1)) === 0;
+    if (isPOT(img.width) && isPOT(img.height)) {
+        gl.generateMipmap(gl.TEXTURE_2D);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    } else {
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    }
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    return tex;
 }
 
 function resolveURL(baseUrl, rel) {
-  if (/^https?:\/\//i.test(rel)) return rel;         
-  const base = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1);
-  return base + rel;                                  
+    if (/^https?:\/\//i.test(rel)) return rel;         
+    const base = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1);
+    return base + rel;                                  
 }
 
 
@@ -468,36 +587,17 @@ function loadModels(trianglesUrl, ellipsoidsUrl) {
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, triangleBuffers[whichSet]); // activate that buffer
                 gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint16Array(inputTriangles[whichSet].glTriangles),gl.STATIC_DRAW); // data in
 
-                // --- UVs ---
+                //   UVs  
                 uvBuffers[whichSet] = gl.createBuffer();
                 gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffers[whichSet]);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(inputTriangles[whichSet].glUVs), gl.STATIC_DRAW);
 
-                // --- Texture ---
+                //   Texture  
                 inputTriangles[whichSet].hasTexture = false;
                 if (inputTriangles[whichSet].material && inputTriangles[whichSet].material.texture) {
-                    var img = new Image();
-                    img.crossOrigin = "anonymous";
-                    img.onload = function(setIndex, imageObj) {
-                        return function() {
-                        inputTriangles[setIndex].glTexture = makeTextureFromImage(imageObj);
-                        inputTriangles[setIndex].hasTexture = true;
-                        };
-                    } (whichSet, img);
-                    img.onerror = function(setIndex){ return function(){ inputTriangles[setIndex].hasTexture = false; }; }(whichSet);
-
-                    // Resolve relative name like "abe.png" against triangles.json folder
-                    img.src = resolveURL(INPUT_TRIANGLES_URL, inputTriangles[whichSet].material.texture);
+                loadAnyTexture(inputTriangles[whichSet], INPUT_TRIANGLES_URL,
+                                inputTriangles[whichSet].material.texture);
                 }
-
-                const mat = inputTriangles[whichSet].material || {};
-                const opacity =
-                    (mat.opacity != null) ? mat.opacity :
-                    (mat.alpha   != null) ? mat.alpha   : 1.0;   
-                inputTriangles[whichSet].opacity = opacity;
-
-                const usesAlphaTexture = !!(mat.useAlphaTexture === true);
-                inputTriangles[whichSet].transparent =  (opacity < 1.0) || (inputTriangles[whichSet].hasTexture && usesAlphaTexture);
 
             } // end for each triangle set 
 
@@ -563,14 +663,7 @@ function loadModels(trianglesUrl, ellipsoidsUrl) {
                         (ellipsoid.material && ellipsoid.material.texture);
 
                     if (texName) {
-                        const img = new Image();
-                        img.crossOrigin = "anonymous";
-                        img.onload = ((el, imageObj) => () => {
-                            el.glTexture = makeTextureFromImage(imageObj);
-                            el.hasTexture = true;
-                        })(ellipsoid, img);
-                        img.onerror = ((el) => () => { el.hasTexture = false; })(ellipsoid);
-                        img.src = resolveURL(ellipsoidsUrl, texName);
+                        loadAnyTexture(ellipsoid, ellipsoidsUrl, texName);
                     }
 
                     // pick opacity from top-level first, then material, then default
@@ -778,7 +871,7 @@ function setupShaders() {
                 var eyePositionULoc = gl.getUniformLocation(shaderProgram, "uEyePosition"); // ptr to eye position
                 var lightAmbientULoc = gl.getUniformLocation(shaderProgram, "uLightAmbient"); // ptr to light ambient
                 var lightDiffuseULoc = gl.getUniformLocation(shaderProgram, "uLightDiffuse"); // ptr to light diffuse
-                var lightSpecularULoc = gl.getUniformLocation(shaderProgram, "uLightSpecular"); // ptr to light specular
+                var lightSpecularULoc = gl.getUniformLocation(shaderProgram, "uLightSpecular"); // ptr to light's specular
                 var lightPositionULoc = gl.getUniformLocation(shaderProgram, "uLightPosition"); // ptr to light position
                 ambientULoc = gl.getUniformLocation(shaderProgram, "uAmbient"); // ptr to ambient
                 diffuseULoc = gl.getUniformLocation(shaderProgram, "uDiffuse"); // ptr to diffuse
@@ -805,6 +898,7 @@ function setupShaders() {
 
 // render the loaded model
 function renderModels() {
+    for (const a of animatedTextures) a.update();
     
     // construct the model transform matrix, based on model state
     function makeModelTransform(currModel) {
@@ -838,11 +932,14 @@ function renderModels() {
     var pMatrix = mat4.create(); // projection matrix
     var vMatrix = mat4.create(); // view matrix
     var mMatrix = mat4.create(); // model matrix
-    var pvMatrix = mat4.create(); // hand * proj * view matrices
+    var pvMatrix = mat4.create(); // hand * proj * view
     var pvmMatrix = mat4.create(); // hand * proj * view * model matrices
     
     window.requestAnimationFrame(renderModels); // set up frame render callback
     
+    // Refresh any animated textures before drawing
+    for (const a of animatedTextures) a.update();
+
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); // clear frame/depth buffers
     
     // set up projection and view
@@ -904,7 +1001,7 @@ function renderModels() {
         return vec3.distance(Eye, w);
     }
 
-    // --- bucketize triangle sets into opaque / transparent ---
+    //   bucketize triangle sets into opaque / transparent  
     const opaque = [];
     const transparent = [];
     for (let i = 0; i < numTriangleSets; ++i) {
@@ -919,18 +1016,18 @@ function renderModels() {
         }
     }
 
-    // --- sort transparent back-to-front each frame ---
+    //   sort transparent back-to-front each frame  
     transparent.sort((a, b) => {
         const da = worldCenterDistance(inputTriangles[a]);
         const db = worldCenterDistance(inputTriangles[b]);
         return db - da; // farther first
     });
 
-    // --- PASS 1: opaque (depth test ON, depth write ON) ---
+    //   opaque (depth test ON, depth write ON)  
     gl.depthMask(true);
     for (const i of opaque) drawOneTriSet(i);
 
-    // --- PASS 2: transparent (depth test ON, depth write OFF) ---
+    //   transparent (depth test ON, depth write OFF)  
     gl.depthMask(false);
     for (const i of transparent) drawOneTriSet(i);
     // gl.depthMask(true); // restore for next frame
@@ -987,9 +1084,9 @@ const SCENES = [
     backgroundUrl: "sky.jpg"
   },
   { name: "Scene B",
-    trianglesUrl: "triangles.json",
-    ellipsoidsUrl: "ellipsoids.json",
-    backgroundUrl: "sky.jpg"
+    trianglesUrl: "myown.json",
+    ellipsoidsUrl: "",
+    backgroundUrl: "stars.jpg"
   }
 ];
 
@@ -1011,24 +1108,29 @@ function setBackground(src) {
 
 // clear old GL resources before loading a new scen
 function clearGLResources() {
-  for (let i = 0; i < vertexBuffers.length; ++i) gl.deleteBuffer(vertexBuffers[i]);
-  for (let i = 0; i < normalBuffers.length; ++i) gl.deleteBuffer(normalBuffers[i]);
-  for (let i = 0; i < triangleBuffers.length; ++i) gl.deleteBuffer(triangleBuffers[i]);
-  for (let i = 0; i < uvBuffers.length; ++i) gl.deleteBuffer(uvBuffers[i]);
-  for (let s of inputTriangles) {
+    for (let i = 0; i < vertexBuffers.length; ++i) gl.deleteBuffer(vertexBuffers[i]);
+    for (let i = 0; i < normalBuffers.length; ++i) gl.deleteBuffer(normalBuffers[i]);
+    for (let i = 0; i < triangleBuffers.length; ++i) gl.deleteBuffer(triangleBuffers[i]);
+    for (let i = 0; i < uvBuffers.length; ++i) gl.deleteBuffer(uvBuffers[i]);
+    for (let s of inputTriangles) {
     if (s && s.glTexture) gl.deleteTexture(s.glTexture);
-  }
+    if (s && s._offscreenImg) {
+        if (s._offscreenImg.parentNode) s._offscreenImg.parentNode.removeChild(s._offscreenImg);
+        delete s._offscreenImg;
+    }
+    }
+    animatedTextures.length = 0;
 
-  // reset globals
-  inputTriangles = [];
-  inputEllipsoids = [];
-  numTriangleSets = 0;
-  numEllipsoids = 0;
-  vertexBuffers = [];
-  normalBuffers = [];
-  triangleBuffers = [];
-  uvBuffers = [];
-  triSetSizes = [];
+    // reset globals
+    inputTriangles = [];
+    inputEllipsoids = [];
+    numTriangleSets = 0;
+    numEllipsoids = 0;
+    vertexBuffers = [];
+    normalBuffers = [];
+    triangleBuffers = [];
+    uvBuffers = [];
+    triSetSizes = [];
 }
 
 // Load one scene 
